@@ -71,6 +71,9 @@ func (s *FilesStore) filePath(ctx echo.Context) string {
 		if !strings.Contains(base, ".") {
 			path = path + "/index.html"
 		}
+		if base == "" {
+			path = "/index.html"
+		}
 	}
 	return path
 }
