@@ -31,7 +31,7 @@ type StaticServerMiddlewareInterface interface {
 }
 
 // NewGCSStaticMiddleware initializes and returns a new instance of FilesStore with the provided GCSStaticConfig.
-func (s *FilesStore) NewGCSStaticMiddleware(config GCSStaticConfig) StaticServerMiddlewareInterface {
+func NewGCSStaticMiddleware(config GCSStaticConfig) StaticServerMiddlewareInterface {
 	return &FilesStore{
 		config: config,
 	}
@@ -48,6 +48,12 @@ func (s *FilesStore) ServerHeader(next echo.HandlerFunc) echo.HandlerFunc {
 		filePath := s.filePath(c)
 		file, contentType, err := s.getFile(filePath)
 		if err != nil {
+			if s.config.IsSPA {
+				IndexFile, IndexFileType, Err := s.getFile("index.html")
+				if Err == nil {
+					return c.Blob(http.StatusOK, IndexFileType, IndexFile)
+				}
+			}
 			return c.NoContent(http.StatusNotFound)
 		}
 
@@ -72,7 +78,7 @@ func (s *FilesStore) filePath(ctx echo.Context) string {
 			path = path + "/index.html"
 		}
 		if base == "." {
-			path = "/index.html"
+			path = "index.html"
 		}
 	}
 	return path
