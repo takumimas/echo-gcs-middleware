@@ -5,12 +5,16 @@ package gcsmiddleware
 
 import (
 	"cloud.google.com/go/storage"
+	"bytes"
 	"context"
+	"compress/gzip"
+	"fmt"
 	"github.com/labstack/echo/v4"
 	"io"
 	"mime"
 	"net/http"
-	pathLib "path"
+	"path"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +39,17 @@ type GCSStaticConfig struct {
 	// For example, if RootPath is "/static/", a request to "/static/css/style.css"
 	// will serve the file at "css/style.css" in the bucket
 	RootPath string
+
+	// EnableCompression enables gzip/brotli compression for text-based files
+	EnableCompression bool
+
+	// CompressionLevel specifies the compression level (1-9, higher means better compression but slower)
+	// Default is 6 if not specified
+	CompressionLevel int
+
+	// MinSizeForCompression specifies the minimum file size in bytes for compression
+	// Files smaller than this size will not be compressed
+	MinSizeForCompression int64
 }
 
 // FilesStore manages the GCS client and handles file operations.
@@ -82,17 +97,42 @@ func (s *FilesStore) ServerHeader(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		filePath := s.filePath(c)
-		file, contentType, err := s.getFile(filePath)
+		file, contentType, size, err := s.getFile(filePath)
 		if err != nil {
 			if s.config.IsSPA {
-				IndexFile, IndexFileType, Err := s.getFile("index.html")
+				IndexFile, IndexFileType, IndexSize, Err := s.getFile("index.html")
 				if Err == nil {
+					c.Response().Header().Set("Content-Length", strconv.FormatInt(IndexSize, 10))
 					return c.Blob(http.StatusOK, IndexFileType, IndexFile)
 				}
 			}
 			return c.NoContent(http.StatusNotFound)
 		}
 
+		// Check if compression is possible
+		if s.shouldCompress(contentType, size) {
+			// Get accepted encodings from the request
+			acceptEncoding := c.Request().Header.Get("Accept-Encoding")
+			var encoding string
+			if strings.Contains(acceptEncoding, "br") {
+				encoding = "br"
+			} else if strings.Contains(acceptEncoding, "gzip") {
+				encoding = "gzip"
+			}
+
+			if encoding != "" {
+				compressed, err := s.compressData(file, encoding)
+				if err == nil {
+					c.Response().Header().Set("Content-Encoding", encoding)
+					c.Response().Header().Set("Content-Length", strconv.Itoa(len(compressed)))
+					c.Response().Header().Set("Vary", "Accept-Encoding")
+					return c.Blob(http.StatusOK, contentType, compressed)
+				}
+			}
+		}
+
+		// If no compression or compression failed, serve uncompressed
+		c.Response().Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		return c.Blob(http.StatusOK, contentType, file)
 	}
 }
@@ -107,7 +147,7 @@ func (s *FilesStore) ServerHeader(next echo.HandlerFunc) echo.HandlerFunc {
 // Returns:
 //   - string representing the processed file path to be used for GCS object retrieval
 func (s *FilesStore) filePath(ctx echo.Context) string {
-	path := ctx.Request().URL.Path
+	reqPath := ctx.Request().URL.Path
 	rootPath := s.config.RootPath
 	if rootPath[0] != '/' {
 		rootPath = "/" + rootPath
@@ -115,21 +155,21 @@ func (s *FilesStore) filePath(ctx echo.Context) string {
 	if rootPath[len(rootPath)-1:] != "/" {
 		rootPath = rootPath + "/"
 	}
-	path = strings.Replace(path, rootPath, "", 1)
+	reqPath = strings.Replace(reqPath, rootPath, "", 1)
 	if s.config.IsSPA {
-		base := pathLib.Base(path)
+		base := path.Base(reqPath)
 		if !strings.Contains(base, ".") {
-			if path == "" || path == "/" {
-				path = "index.html"
+			if reqPath == "" || reqPath == "/" {
+				reqPath = "index.html"
 			} else {
-				path = strings.TrimPrefix(path, "/") + "/index.html"
+				reqPath = strings.TrimPrefix(reqPath, "/") + "/index.html"
 			}
 		}
 		if base == "." {
-			path = "index.html"
+			reqPath = "index.html"
 		}
 	}
-	return path
+	return reqPath
 }
 
 // mimeTypeMap contains common file extensions and their corresponding MIME types
@@ -155,13 +195,13 @@ var mimeTypeMap = map[string]string{
 // getContentType determines the content type of a file based on its extension
 // If the extension is not recognized, it falls back to the provided fallback type
 // or "application/octet-stream" if no fallback is provided
-func getContentType(path string, fallback string) string {
+func getContentType(filePath string, fallback string) string {
 	// Remove query parameters if present
-	if idx := strings.Index(path, "?"); idx != -1 {
-		path = path[:idx]
+	if idx := strings.Index(filePath, "?"); idx != -1 {
+		filePath = filePath[:idx]
 	}
 
-	ext := strings.ToLower(pathLib.Ext(path))
+	ext := strings.ToLower(path.Ext(filePath))
 	if mimeType, ok := mimeTypeMap[ext]; ok {
 		return mimeType
 	}
@@ -187,7 +227,7 @@ func getContentType(path string, fallback string) string {
 
 // getFile retrieves a file from Google Cloud Storage using the specified path.
 // It handles the GCS object reading and returns the file contents along with
-// the content type.
+// the content type and size.
 //
 // Parameters:
 //   - path: The path to the file in the GCS bucket
@@ -195,19 +235,85 @@ func getContentType(path string, fallback string) string {
 // Returns:
 //   - body: The file contents as a byte slice
 //   - contentType: The MIME type of the file
+//   - size: The size of the file in bytes
 //   - err: Any error encountered during the file retrieval process
-func (s *FilesStore) getFile(path string) (body []byte, contentType string, err error) {
-	reader, err := s.config.Client.Bucket(s.config.BucketName).Object(path).NewReader(context.Background())
+func (s *FilesStore) getFile(path string) (body []byte, contentType string, size int64, err error) {
+	obj := s.config.Client.Bucket(s.config.BucketName).Object(path)
+	attrs, err := obj.Attrs(context.Background())
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
+	}
+
+	reader, err := obj.NewReader(context.Background())
+	if err != nil {
+		return nil, "", 0, err
 	}
 	defer reader.Close()
+
 	fileBinary, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 
 	// Get content type from file extension first, falling back to GCS metadata
-	contentType = getContentType(path, reader.Attrs.ContentType)
-	return fileBinary, contentType, nil
+	contentType = getContentType(path, attrs.ContentType)
+	return fileBinary, contentType, attrs.Size, nil
+}
+
+// compressData compresses the input data using the specified encoding
+func (s *FilesStore) compressData(data []byte, encoding string) ([]byte, error) {
+	var buf bytes.Buffer
+	var writer io.WriteCloser
+
+	switch encoding {
+	case "gzip":
+		level := s.config.CompressionLevel
+		if level == 0 {
+			level = 6 // default compression level
+		}
+		writer, _ = gzip.NewWriterLevel(&buf, level)
+	case "br":
+		// Note: brotli compression requires additional dependency
+		// You may want to add github.com/andybalholm/brotli
+		return nil, fmt.Errorf("brotli compression not implemented")
+	default:
+		return nil, fmt.Errorf("unsupported encoding: %s", encoding)
+	}
+
+	_, err := writer.Write(data)
+	if err != nil {
+		return nil, err
+	}
+
+	err = writer.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// shouldCompress determines if the file should be compressed based on its content type and size
+func (s *FilesStore) shouldCompress(contentType string, size int64) bool {
+	if !s.config.EnableCompression {
+		return false
+	}
+
+	if size < s.config.MinSizeForCompression {
+		return false
+	}
+
+	compressibleTypes := map[string]bool{
+		"text/html":                true,
+		"text/css":                 true,
+		"text/plain":               true,
+		"text/xml":                 true,
+		"application/javascript":    true,
+		"application/json":         true,
+		"application/xml":          true,
+		"application/x-javascript": true,
+		"application/ld+json":      true,
+	}
+
+	return compressibleTypes[contentType]
 }
