@@ -40,6 +40,9 @@ func main() {
 		IgnorePath: nil,  // Specify paths to ignore if any
 		IsSPA:      true, // Set to true if serving a Single Page Application
 		RootPath:   "/",   // Set the root path
+		EnableCompression: true, // Enable gzip compression for text-based files
+		CompressionLevel: 6, // Compression level (1-9, higher means better compression but slower)
+		MinSizeForCompression: 1024, // Minimum file size in bytes for compression
 	}
 
 	// Create the GCS middleware
@@ -56,13 +59,28 @@ func main() {
 }
 ```
 
-**IsSPA:**
+## Configuration Options
+
+### IsSPA
 
 When IsSPA is set to true, any 404 errors will automatically redirect to index.html. This is useful for Single Page Applications (SPAs) where routing is handled client-side and all non-static paths should serve the main entry point (index.html).
 
-**RootPath:**
+### RootPath
 
 If you set RootPath to a specific value, such as /app/, it adjusts the base path from which files are served. For example, when RootPath is set to /app/, a request to /app/ will serve the file located at app/index.html.
 
+### Compression Settings
 
+The middleware supports automatic compression of text-based files (HTML, CSS, JavaScript, etc.) to reduce transfer sizes and improve loading times. The following compression-related settings are available:
 
+- **EnableCompression**: When set to true, enables automatic compression of compressible files.
+- **CompressionLevel**: Specifies the compression level (1-9). Higher values provide better compression but are slower. Default is 6.
+- **MinSizeForCompression**: The minimum file size in bytes required for compression to be applied. Files smaller than this size will be served uncompressed.
+
+Currently supported compression formats:
+- gzip (based on Accept-Encoding header)
+- brotli (planned for future implementation)
+
+### Content-Length Header
+
+The middleware automatically sets the Content-Length header for all responses, which helps browsers better handle the response and improve rendering performance. For compressed responses, the Content-Length reflects the size of the compressed data.
