@@ -107,7 +107,7 @@ func TestFilePath(t *testing.T) {
 				RootPath: "/app/",
 				IsSPA:    true,
 			},
-			expected: "/index.html",
+			expected: "index.html",
 		},
 	}
 
@@ -133,6 +133,99 @@ func TestFilePath(t *testing.T) {
 
 			// Assert that the actual path matches the expected path
 			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+// TestGetContentType tests the getContentType function with various file extensions
+// and fallback scenarios.
+func TestGetContentType(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		fallback string
+		want     string
+	}{
+		{
+			name:     "Common HTML file",
+			path:     "index.html",
+			fallback: "",
+			want:     "text/html",
+		},
+		{
+			name:     "CSS file",
+			path:     "styles.css",
+			fallback: "",
+			want:     "text/css",
+		},
+		{
+			name:     "JavaScript file",
+			path:     "app.js",
+			fallback: "",
+			want:     "application/javascript",
+		},
+		{
+			name:     "JPEG image",
+			path:     "photo.jpg",
+			fallback: "",
+			want:     "image/jpeg",
+		},
+		{
+			name:     "JPEG image (uppercase extension)",
+			path:     "photo.JPG",
+			fallback: "",
+			want:     "image/jpeg",
+		},
+		{
+			name:     "PNG image",
+			path:     "icon.png",
+			fallback: "",
+			want:     "image/png",
+		},
+		{
+			name:     "Unknown extension with fallback",
+			path:     "data.xyz",
+			fallback: "application/custom",
+			want:     "application/custom",
+		},
+		{
+			name:     "Unknown extension without fallback",
+			path:     "data.unknown",
+			fallback: "",
+			want:     "application/octet-stream",
+		},
+		{
+			name:     "No extension with fallback",
+			path:     "README",
+			fallback: "text/plain",
+			want:     "text/plain",
+		},
+		{
+			name:     "Web font file",
+			path:     "font.woff2",
+			fallback: "",
+			want:     "font/woff2",
+		},
+		{
+			name:     "Path with directory",
+			path:     "/static/css/styles.css",
+			fallback: "",
+			want:     "text/css",
+		},
+		{
+			name:     "Path with query parameters",
+			path:     "styles.css?v=1.2.3",
+			fallback: "",
+			want:     "text/css",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getContentType(tt.path, tt.fallback)
+			if got != tt.want {
+				t.Errorf("getContentType() = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

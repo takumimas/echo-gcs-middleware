@@ -8,6 +8,7 @@ import (
 	"context"
 	"github.com/labstack/echo/v4"
 	"io"
+	"mime"
 	"net/http"
 	pathLib "path"
 	"strings"
@@ -118,13 +119,70 @@ func (s *FilesStore) filePath(ctx echo.Context) string {
 	if s.config.IsSPA {
 		base := pathLib.Base(path)
 		if !strings.Contains(base, ".") {
-			path = path + "/index.html"
+			if path == "" || path == "/" {
+				path = "index.html"
+			} else {
+				path = strings.TrimPrefix(path, "/") + "/index.html"
+			}
 		}
 		if base == "." {
 			path = "index.html"
 		}
 	}
 	return path
+}
+
+// mimeTypeMap contains common file extensions and their corresponding MIME types
+var mimeTypeMap = map[string]string{
+	".html": "text/html",
+	".css":  "text/css",
+	".js":   "application/javascript",
+	".json": "application/json",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".svg":  "image/svg+xml",
+	".ico":  "image/x-icon",
+	".txt":  "text/plain",
+	".pdf":  "application/pdf",
+	".woff": "font/woff",
+	".woff2": "font/woff2",
+	".ttf":  "font/ttf",
+	".eot":  "application/vnd.ms-fontobject",
+}
+
+// getContentType determines the content type of a file based on its extension
+// If the extension is not recognized, it falls back to the provided fallback type
+// or "application/octet-stream" if no fallback is provided
+func getContentType(path string, fallback string) string {
+	// Remove query parameters if present
+	if idx := strings.Index(path, "?"); idx != -1 {
+		path = path[:idx]
+	}
+
+	ext := strings.ToLower(pathLib.Ext(path))
+	if mimeType, ok := mimeTypeMap[ext]; ok {
+		return mimeType
+	}
+
+	// For unknown extensions, prioritize the fallback over mime package
+	if fallback != "" {
+		return fallback
+	}
+
+	// Try to use the standard mime package as a fallback
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType != "" {
+		// Some MIME types from the mime package include additional parameters
+		// (e.g., "text/plain; charset=utf-8") which we want to strip
+		if idx := strings.Index(mimeType, ";"); idx != -1 {
+			mimeType = mimeType[:idx]
+		}
+		return strings.TrimSpace(mimeType)
+	}
+
+	return "application/octet-stream"
 }
 
 // getFile retrieves a file from Google Cloud Storage using the specified path.
@@ -148,5 +206,8 @@ func (s *FilesStore) getFile(path string) (body []byte, contentType string, err 
 	if err != nil {
 		return nil, "", err
 	}
-	return fileBinary, reader.Attrs.ContentType, nil
+
+	// Get content type from file extension first, falling back to GCS metadata
+	contentType = getContentType(path, reader.Attrs.ContentType)
+	return fileBinary, contentType, nil
 }
