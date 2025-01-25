@@ -39,7 +39,7 @@ func main() {
 		BucketName: "gcs-echo-test",
 		IgnorePath: nil,  // Specify paths to ignore if any
 		IsSPA:      true, // Set to true if serving a Single Page Application
-		RootPath:   "/",   // Set the gcs root path
+		RootPath:   "/",   // Set the root path
 	}
 
 	// Create the GCS middleware
