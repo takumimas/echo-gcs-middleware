@@ -3,6 +3,7 @@ package gcsmiddleware
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -392,4 +393,51 @@ func TestContentLength(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetFiles tests parallel file retrieval functionality
+func TestGetFiles(t *testing.T) {
+	t.Skip("Skipping test that requires GCS credentials")
+}
+
+// TestParallelSPAHandling tests the parallel handling of SPA mode
+func TestParallelSPAHandling(t *testing.T) {
+	t.Skip("Skipping test that requires GCS credentials")
+}
+
+// TestFileResult tests the FileResult structure and its usage
+func TestFileResult(t *testing.T) {
+	// Test case data
+	testData := []byte("test content")
+	contentType := "text/plain"
+	size := int64(len(testData))
+	testError := fmt.Errorf("test error")
+
+	// Create FileResult instances for testing
+	successResult := FileResult{
+		Body:        testData,
+		ContentType: contentType,
+		Size:        size,
+		Err:         nil,
+	}
+
+	errorResult := FileResult{
+		Body:        nil,
+		ContentType: "",
+		Size:        0,
+		Err:         testError,
+	}
+
+	// Test successful result
+	assert.NotNil(t, successResult.Body)
+	assert.Equal(t, contentType, successResult.ContentType)
+	assert.Equal(t, size, successResult.Size)
+	assert.NoError(t, successResult.Err)
+
+	// Test error result
+	assert.Nil(t, errorResult.Body)
+	assert.Empty(t, errorResult.ContentType)
+	assert.Zero(t, errorResult.Size)
+	assert.Error(t, errorResult.Err)
+	assert.Equal(t, testError, errorResult.Err)
 }

@@ -97,21 +97,32 @@ func (s *FilesStore) ServerHeader(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		filePath := s.filePath(c)
-		file, contentType, size, err := s.getFile(filePath)
-		if err != nil {
+		
+		// Prepare paths for potential parallel retrieval
+		paths := []string{filePath}
+		if s.config.IsSPA {
+			paths = append(paths, "index.html") // Add index.html for SPA mode
+		}
+
+		// Get files in parallel
+		results := s.getFiles(paths)
+
+		// Process main file result
+		fileResult := results[0]
+		if fileResult.Err != nil {
 			if s.config.IsSPA {
-				IndexFile, IndexFileType, IndexSize, Err := s.getFile("index.html")
-				if Err == nil {
-					c.Response().Header().Set("Content-Length", strconv.FormatInt(IndexSize, 10))
-					return c.Blob(http.StatusOK, IndexFileType, IndexFile)
+				// Use index.html result if available
+				indexResult := results[1]
+				if indexResult.Err == nil {
+					c.Response().Header().Set("Content-Length", strconv.FormatInt(indexResult.Size, 10))
+					return c.Blob(http.StatusOK, indexResult.ContentType, indexResult.Body)
 				}
 			}
 			return c.NoContent(http.StatusNotFound)
 		}
 
 		// Check if compression is possible
-		if s.shouldCompress(contentType, size) {
-			// Get accepted encodings from the request
+		if s.shouldCompress(fileResult.ContentType, fileResult.Size) {
 			acceptEncoding := c.Request().Header.Get("Accept-Encoding")
 			var encoding string
 			if strings.Contains(acceptEncoding, "br") {
@@ -121,19 +132,18 @@ func (s *FilesStore) ServerHeader(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 
 			if encoding != "" {
-				compressed, err := s.compressData(file, encoding)
+				compressed, err := s.compressData(fileResult.Body, encoding)
 				if err == nil {
 					c.Response().Header().Set("Content-Encoding", encoding)
 					c.Response().Header().Set("Content-Length", strconv.Itoa(len(compressed)))
 					c.Response().Header().Set("Vary", "Accept-Encoding")
-					return c.Blob(http.StatusOK, contentType, compressed)
+					return c.Blob(http.StatusOK, fileResult.ContentType, compressed)
 				}
 			}
 		}
 
-		// If no compression or compression failed, serve uncompressed
-		c.Response().Header().Set("Content-Length", strconv.FormatInt(size, 10))
-		return c.Blob(http.StatusOK, contentType, file)
+		c.Response().Header().Set("Content-Length", strconv.FormatInt(fileResult.Size, 10))
+		return c.Blob(http.StatusOK, fileResult.ContentType, fileResult.Body)
 	}
 }
 
@@ -225,6 +235,14 @@ func getContentType(filePath string, fallback string) string {
 	return "application/octet-stream"
 }
 
+// FileResult represents the result of a file retrieval operation
+type FileResult struct {
+	Body        []byte
+	ContentType string
+	Size        int64
+	Err         error
+}
+
 // getFile retrieves a file from Google Cloud Storage using the specified path.
 // It handles the GCS object reading and returns the file contents along with
 // the content type and size.
@@ -258,6 +276,36 @@ func (s *FilesStore) getFile(path string) (body []byte, contentType string, size
 	// Get content type from file extension first, falling back to GCS metadata
 	contentType = getContentType(path, attrs.ContentType)
 	return fileBinary, contentType, attrs.Size, nil
+}
+
+// getFileAsync retrieves a file from GCS asynchronously
+func (s *FilesStore) getFileAsync(path string, resultChan chan<- FileResult) {
+	body, contentType, size, err := s.getFile(path)
+	resultChan <- FileResult{
+		Body:        body,
+		ContentType: contentType,
+		Size:        size,
+		Err:         err,
+	}
+}
+
+// getFiles retrieves multiple files from GCS in parallel
+func (s *FilesStore) getFiles(paths []string) []FileResult {
+	resultChan := make(chan FileResult, len(paths))
+	results := make([]FileResult, len(paths))
+
+	// Start goroutines for each file
+	for _, path := range paths {
+		go s.getFileAsync(path, resultChan)
+	}
+
+	// Collect results
+	for i := 0; i < len(paths); i++ {
+		result := <-resultChan
+		results[i] = result
+	}
+
+	return results
 }
 
 // compressData compresses the input data using the specified encoding
